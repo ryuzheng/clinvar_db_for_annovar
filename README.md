@@ -1,0 +1,1 @@
+# clinvar_db_for_annovar
