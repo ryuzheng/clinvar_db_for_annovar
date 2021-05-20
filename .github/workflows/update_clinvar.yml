@@ -64,6 +64,7 @@ jobs:
           path: ./Clinvar_build/hg38
 
       - name: Commit
+        working-directory: .
         run: |
           git config --local user.name 'GitHub Action'
           git config --local user.email action@github.com
