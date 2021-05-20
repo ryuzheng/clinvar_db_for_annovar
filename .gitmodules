@@ -1,6 +1,3 @@
 [submodule "ANNOVAR_script"]
 	path = ANNOVAR_script
 	url = git@github.com:ryuzheng/ANNOVAR_script.git
-[submodule "update_annovar_db"]
-	path = update_annovar_db
-	url = https://github.com/mobidic/update_annovar_db.git
