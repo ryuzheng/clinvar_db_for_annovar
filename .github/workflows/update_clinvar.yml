@@ -1,0 +1,76 @@
+name: Update Clinvar database for ANNOVAR
+
+on:
+  schedule:
+    - cron: "0 0 */3 * *" # twice a week
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        genome: ["hg19", "hg38"]
+
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          token: ${{ secrets.GH_TOKEN }}
+          submodules: "true"
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v1
+        with:
+          python-version: 3.9
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirement.txt
+
+      - name: Update Clinvar with GRCh37
+        with:
+          genome-version: ${{ matrix.genome }}
+        if: genome-version == 'hg19'
+        run: |
+          cd ./update_annovar_db
+          python3 ./update_resources.py -d clinvar -w -hp ../Clinvar_build/hg19 -a ../ANNOVAR_script -g GRCh37
+          cd ../
+
+      - name: Update Clinvar with GRCh38
+        with:
+          genome-version: ${{ matrix.genome }}
+        if: genome-version == 'hg38'
+        run: |
+          cd ./update_annovar_db
+          python3 ./update_resources.py -d clinvar -w -hp ../Clinvar_build/hg38 -a ../ANNOVAR_script -g GRCh38
+          cd ../
+
+      - name: Commit
+        run: |
+          git config --local user.name 'GitHub Action'
+          git config --local user.email action@github.com
+          git add .
+          git commit -m "update new version of Clinvar" -a
+
+      - name: Push changes
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GH_TOKEN }}
+          branch: master
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: ${{ matrix.genome }}
+          path: ./Clinvar_build/${{ matrix.genome }}
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            ./Clinvar_build/hg19/*
+            ./Clinvar_build/hg38/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
