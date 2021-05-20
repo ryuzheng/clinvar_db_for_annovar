@@ -51,6 +51,10 @@ jobs:
     needs: build
 
     steps:
+      - uses: actions/checkout@v2
+        with:
+          token: ${{ secrets.GH_TOKEN }}
+
       - name: Download artifacts for GRCh37
         uses: actions/download-artifact@v2
         with:
@@ -64,7 +68,6 @@ jobs:
           path: ./Clinvar_build/hg38
 
       - name: Commit
-        working-directory: .
         run: |
           git config --local user.name 'GitHub Action'
           git config --local user.email action@github.com
