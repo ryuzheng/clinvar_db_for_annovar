@@ -29,18 +29,14 @@ jobs:
           pip install -r requirement.txt
 
       - name: Update Clinvar with GRCh37
-        with:
-          genome-version: ${{ matrix.genome }}
-        if: genome-version == 'hg19'
+        if: matrix.genome == 'hg19'
         run: |
           cd ./update_annovar_db
           python3 ./update_resources.py -d clinvar -w -hp ../Clinvar_build/hg19 -a ../ANNOVAR_script -g GRCh37
           cd ../
 
       - name: Update Clinvar with GRCh38
-        with:
-          genome-version: ${{ matrix.genome }}
-        if: genome-version == 'hg38'
+        if: matrix.genome == 'hg38'
         run: |
           cd ./update_annovar_db
           python3 ./update_resources.py -d clinvar -w -hp ../Clinvar_build/hg38 -a ../ANNOVAR_script -g GRCh38
