@@ -68,6 +68,7 @@ jobs:
           path: ./Clinvar_build/hg38
 
       - name: Commit
+        id: auto-commit-action
         uses: stefanzweifel/git-auto-commit-action@v4
 
       - name: Push changes
@@ -76,11 +77,26 @@ jobs:
           github_token: ${{ secrets.GH_TOKEN }}
           branch: master
 
-      - name: Release
-        uses: softprops/action-gh-release@v1
+      - name: Get current date
+        id: date
+        run: echo "::set-output name=date::$(date +'%Y-%m-%d')"
+
+      - name: Create Github Release
+        if: steps.auto-commit-action.outputs.changes_detected == 'true'
+        uses: actions/create-release@v1
+        id: create_release
         with:
-          files: |
-            ./Clinvar_build/hg19/*
-            ./Clinvar_build/hg38/*
+          tag_name: tag-${{ steps.date.outputs.date }}
+          release_name: release-${{ steps.date.outputs.date }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+
+      - name: Upload assets to Github Release
+        if: steps.auto-commit-action.outputs.changes_detected == 'true'
+        uses: csexton/release-asset-action@v2
+        with:
+          pattern: "Clinvar_build/*/*.gz"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          release-url: ${{ steps.create_release.outputs.upload_url }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
