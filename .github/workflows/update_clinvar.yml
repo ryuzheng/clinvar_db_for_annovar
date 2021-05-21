@@ -96,7 +96,5 @@ jobs:
         uses: csexton/release-asset-action@v2
         with:
           pattern: "Clinvar_build/*/*.gz"
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.GH_TOKEN }}
           release-url: ${{ steps.create_release.outputs.upload_url }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
