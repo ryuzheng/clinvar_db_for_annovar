@@ -54,6 +54,11 @@ jobs:
       - uses: actions/checkout@v2
         with:
           token: ${{ secrets.GH_TOKEN }}
+      
+      - name: clean previous build
+        run: |
+          rm -- Clinvar_build/hg19/*
+          rm -- Clinvar_build/hg38/*
 
       - name: Download artifacts for GRCh37
         uses: actions/download-artifact@v2
