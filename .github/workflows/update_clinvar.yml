@@ -57,8 +57,8 @@ jobs:
       
       - name: clean previous build
         run: |
-          rm -- Clinvar_build/hg19/*
-          rm -- Clinvar_build/hg38/*
+          rm -f Clinvar_build/hg19/*
+          rm -f Clinvar_build/hg38/*
 
       - name: Download artifacts for GRCh37
         uses: actions/download-artifact@v2
