@@ -1,7 +1,7 @@
 # Clinvar db for ANNOVAR
 
 [![如果显示failed，请谨慎使用](https://github.com/ryuzheng/clinvar_db_for_annovar/workflows/Update%20Clinvar%20database%20for%20ANNOVAR/badge.svg)](https://github.com/ryuzheng/clinvar_db_for_annovar/actions)
-[![release date](https://img.shields.io/github/release-date/ryuzheng/clinvar_db_for_annovar)](https://github.com/ryuzheng/clinvar_db_for_annovar/releases/latest)
+[![release](https://img.shields.io/github/v/release/ryuzheng/clinvar_db_for_annovar?include_prereleases)](https://github.com/ryuzheng/clinvar_db_for_annovar/releases/latest)
 [![Github All Releases](https://img.shields.io/github/downloads/ryuzheng/clinvar_db_for_annovar/total.svg)](https://github.com/ryuzheng/clinvar_db_for_annovar/releases/latest)
 
 使用Github Actions自动更新ANNOVAR所使用的Clinvar数据库。Action的运行频率为每3天一次。
