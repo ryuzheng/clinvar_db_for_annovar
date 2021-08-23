@@ -2,7 +2,7 @@ name: Update Clinvar database for ANNOVAR
 
 on:
   schedule:
-    - cron: "0 0 */3 * *" # twice a week
+    - cron: "0 8 * * *"
   workflow_dispatch:
 
 jobs:
@@ -45,6 +45,7 @@ jobs:
         with:
           name: ${{ matrix.genome }}
           path: ./Clinvar_build/${{ matrix.genome }}
+          retention-days: 1
 
   release:
     runs-on: ubuntu-latest
