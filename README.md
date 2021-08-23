@@ -4,7 +4,7 @@
 [![release](https://img.shields.io/github/v/release/ryuzheng/clinvar_db_for_annovar?include_prereleases)](https://github.com/ryuzheng/clinvar_db_for_annovar/releases/latest)
 [![Github All Releases](https://img.shields.io/github/downloads/ryuzheng/clinvar_db_for_annovar/total.svg)](https://github.com/ryuzheng/clinvar_db_for_annovar/releases/latest)
 
-使用Github Actions自动更新ANNOVAR所使用的Clinvar数据库。Action的运行频率为每3天一次。
+使用Github Actions自动更新ANNOVAR所使用的Clinvar数据库。Action的运行频率为每天一次。
 
 本repo使用[mobidic/update_annovar_db](https://github.com/mobidic/update_annovar_db)的脚本，对[Clinvar的VCF文件](https://ftp.ncbi.nlm.nih.gov/pub/clinvar/)进行处理。
 
@@ -16,7 +16,8 @@
 
 ```
 # Release
-# 假设下载链接为https://github.com/ryuzheng/clinvar_db_for_annovar/releases/download/tag-2021-05-21/hg19_clinvar_20210517.txt.gz
+# 假设下载链接为
+# https://github.com/ryuzheng/clinvar_db_for_annovar/releases/download/tag-2021-05-21/hg19_clinvar_20210517.txt.gz
 wget https://download.fastgit.org/ryuzheng/clinvar_db_for_annovar/releases/download/tag-2021-05-21/hg19_clinvar_20210517.txt.gz
 
 # 假设文件位置为Clinvar_build/hg38/hg38_clinvar_20210517.txt.gz
@@ -25,7 +26,7 @@ wget https://cdn.jsdelivr.net/gh/ryuzheng/clinvar_db_for_annovar/Clinvar_build/h
 
 -----
 
-Use Github Actions to automatically update the Clinvar database used by ANNOVAR. The Action runs every three days.
+Use Github Actions to automatically update the Clinvar database used by ANNOVAR. The Action runs every days.
 
 This repo handles [Clinvar VCF files](https://ftp.ncbi.nlm.nih.gov/pub/Clinvar/) using the [mobidic/update_annovar_db](https://github.com/mobidic/update_annovar_db) script.
 
