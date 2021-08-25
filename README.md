@@ -26,7 +26,7 @@ wget https://cdn.jsdelivr.net/gh/ryuzheng/clinvar_db_for_annovar/Clinvar_build/h
 
 -----
 
-Use Github Actions to automatically update the Clinvar database used by ANNOVAR. The Action runs every days.
+Use Github Actions to automatically update the Clinvar database used by ANNOVAR. The Action runs everyday.
 
 This repo handles [Clinvar VCF files](https://ftp.ncbi.nlm.nih.gov/pub/Clinvar/) using the [mobidic/update_annovar_db](https://github.com/mobidic/update_annovar_db) script.
 
