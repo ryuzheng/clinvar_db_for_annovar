@@ -13,13 +13,13 @@ jobs:
         genome: ["hg19", "hg38"]
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_TOKEN }}
           submodules: "true"
 
       - name: Set up Python 3.9
-        uses: actions/setup-python@v1
+        uses: actions/setup-python@v5
         with:
           python-version: 3.9
 
@@ -41,7 +41,7 @@ jobs:
           python3 ./update_resources.py -d clinvar -w -hp ../Clinvar_build/hg38 -a ../ANNOVAR_script -g GRCh38
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.genome }}
           path: ./Clinvar_build/${{ matrix.genome }}
@@ -52,7 +52,7 @@ jobs:
     needs: build
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_TOKEN }}
       
@@ -62,20 +62,20 @@ jobs:
           rm -f Clinvar_build/hg38/*
 
       - name: Download artifacts for GRCh37
-        uses: actions/download-artifact@v2
+        uses: actions/download-artifact@v4
         with:
           name: "hg19"
           path: ./Clinvar_build/hg19
 
       - name: Download artifacts for GRCh38
-        uses: actions/download-artifact@v2
+        uses: actions/download-artifact@v4
         with:
           name: "hg38"
           path: ./Clinvar_build/hg38
 
       - name: Commit
         id: auto-commit-action
-        uses: stefanzweifel/git-auto-commit-action@v4
+        uses: stefanzweifel/git-auto-commit-action@v5
 
       - name: Push changes
         uses: ad-m/github-push-action@master
@@ -99,7 +99,7 @@ jobs:
 
       - name: Upload assets to Github Release
         if: steps.auto-commit-action.outputs.changes_detected == 'true'
-        uses: csexton/release-asset-action@v2
+        uses: csexton/release-asset-action@v3
         with:
           pattern: "Clinvar_build/*/*.gz"
           github-token: ${{ secrets.GH_TOKEN }}
