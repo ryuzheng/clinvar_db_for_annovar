@@ -7,21 +7,21 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     strategy:
       matrix:
         genome: ["hg19", "hg38"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           token: ${{ secrets.GH_TOKEN }}
           submodules: "true"
 
-      - name: Set up Python 3.9
-        uses: actions/setup-python@v5
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v7
         with:
-          python-version: 3.9
+          python-version: "3.13"
 
       - name: Install dependencies
         run: |
@@ -41,18 +41,18 @@ jobs:
           python3 ./update_resources.py -d clinvar -w -hp ../Clinvar_build/hg38 -a ../ANNOVAR_script -g GRCh38
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.genome }}
           path: ./Clinvar_build/${{ matrix.genome }}
           retention-days: 1
 
   release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: build
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           token: ${{ secrets.GH_TOKEN }}
       
@@ -62,45 +62,37 @@ jobs:
           rm -f Clinvar_build/hg38/*
 
       - name: Download artifacts for GRCh37
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: "hg19"
           path: ./Clinvar_build/hg19
 
       - name: Download artifacts for GRCh38
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: "hg38"
           path: ./Clinvar_build/hg38
 
       - name: Commit
         id: auto-commit-action
-        uses: stefanzweifel/git-auto-commit-action@v5
+        uses: stefanzweifel/git-auto-commit-action@v7
 
       - name: Push changes
-        uses: ad-m/github-push-action@master
+        uses: ad-m/github-push-action@v1.3.0
         with:
           github_token: ${{ secrets.GH_TOKEN }}
           branch: master
 
       - name: Get current date
         id: date
-        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+        run: echo "date=$(date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
 
       - name: Create Github Release
         if: steps.auto-commit-action.outputs.changes_detected == 'true'
-        uses: actions/create-release@v1
-        id: create_release
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: tag-${{ steps.date.outputs.date }}
-          release_name: release-${{ steps.date.outputs.date }}
+          name: release-${{ steps.date.outputs.date }}
+          files: "Clinvar_build/*/*.gz"
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-
-      - name: Upload assets to Github Release
-        if: steps.auto-commit-action.outputs.changes_detected == 'true'
-        uses: csexton/release-asset-action@v3
-        with:
-          pattern: "Clinvar_build/*/*.gz"
-          github-token: ${{ secrets.GH_TOKEN }}
-          release-url: ${{ steps.create_release.outputs.upload_url }}
