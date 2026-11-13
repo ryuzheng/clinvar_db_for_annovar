@@ -1,0 +1,56 @@
+name: TEMP build-only test (delete after)
+
+# Temporary, side-effect-free test: runs ONLY the build job to prove
+# ubuntu-26.04 + Python 3.13 + latest actions + deps + update script work.
+# No release, no push to master.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-26.04
+    strategy:
+      matrix:
+        genome: ["hg19", "hg38"]
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.GH_TOKEN }}
+          submodules: "true"
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Show runner + python version
+        run: |
+          cat /etc/os-release | head -3
+          python --version
+          python3 --version
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirement.txt
+
+      - name: Update Clinvar with GRCh37
+        if: matrix.genome == 'hg19'
+        run: |
+          cd ./update_annovar_db
+          python3 ./update_resources.py -d clinvar -w -hp ../Clinvar_build/hg19 -a ../ANNOVAR_script -g GRCh37
+
+      - name: Update Clinvar with GRCh38
+        if: matrix.genome == 'hg38'
+        run: |
+          cd ./update_annovar_db
+          python3 ./update_resources.py -d clinvar -w -hp ../Clinvar_build/hg38 -a ../ANNOVAR_script -g GRCh38
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-${{ matrix.genome }}
+          path: ./Clinvar_build/${{ matrix.genome }}
+          retention-days: 1
