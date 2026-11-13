@@ -5,6 +5,10 @@ name: TEMP build-only test (delete after)
 # No release, no push to master.
 
 on:
+  push:
+    branches: [update_action2]
+    paths:
+      - ".github/workflows/_tmp_build_test.yml"
   workflow_dispatch:
 
 jobs:
