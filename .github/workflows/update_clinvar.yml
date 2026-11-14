@@ -95,18 +95,25 @@ jobs:
       #
       # ClinVar updates roughly once a week, but this workflow runs twice a
       # day.  Every run regenerates the database files, so most runs produce
-      # byte-identical output to the previous release.  Publishing a release
-      # every time would be pure noise (and waste release storage).
+      # identical *data* to the previous release.  Publishing a release every
+      # time would be pure noise (and waste release storage).
       #
-      # We therefore compare the SHA-256 of every freshly generated *.gz file
-      # with the asset of the SAME NAME in the newest existing release.  If
-      # all present files match, there is nothing new and we skip releasing.
+      # IMPORTANT: we must compare the DECOMPRESSED content, because gzip
+      # embeds a timestamp in its header, so two runs over identical data
+      # produce byte-different *.gz files.  We therefore compare the SHA-256
+      # of `zcat <file>` for each freshly generated *.gz against the same
+      # file name in the newest existing release.  If all match -> nothing
+      # new -> skip releasing.
       # ---------------------------------------------------------------------
       - name: Detect whether new data differs from last release
         id: diff
         run: |
           set -euo pipefail
           shopt -s nullglob
+
+          # SHA-256 of decompressed content (data identity, ignoring gzip
+          # timestamp/compression-level differences).
+          content_sha() { gunzip -c "$1" | sha256sum | awk '{print $1}'; }
 
           files=(Clinvar_build/hg19/*.gz Clinvar_build/hg38/*.gz)
           if [ ${#files[@]} -eq 0 ]; then
@@ -130,30 +137,49 @@ jobs:
             publish=true
           else
             echo "Comparing against previous release: $PREV_TAG"
-            tmp="$(mktemp -d)"
-            # Download the previous release's .gz assets for byte comparison.
-            gh release download "$PREV_TAG" --dir "$tmp" --pattern '*.gz' --clobber
-            changed=false
+
+            # Fast path: the generated file name embeds the ClinVar data
+            # release date (from the NCBI FTP listing), not today's date.
+            # A genuinely new ClinVar version therefore yields a file name
+            # that is not among the previous release's assets.  If any new
+            # file name is absent from the previous release, it is new data;
+            # we can decide without downloading the large old assets.
+            prev_names="$(gh release view "$PREV_TAG" --json assets -q '.assets[].name')"
+            new_name=false
             for f in "${files[@]}"; do
               name="$(basename "$f")"
-              new_sha="$(sha256sum "$f" | awk '{print $1}')"
-              prev_file="$tmp/$name"
-              if [ ! -f "$prev_file" ]; then
+              if ! grep -qxF "$name" <<<"$prev_names"; then
                 echo "  NEW FILE:   $name (not in previous release)"
-                changed=true
-                continue
-              fi
-              old_sha="$(sha256sum "$prev_file" | awk '{print $1}')"
-              if [ "$new_sha" != "$old_sha" ]; then
-                echo "  CHANGED:    $name"
-                changed=true
-              else
-                echo "  unchanged:  $name"
+                new_name=true
               fi
             done
-            rm -rf "$tmp"
-            if [ "$changed" = "true" ]; then
+
+            if [ "$new_name" = "true" ]; then
               publish=true
+            else
+              # All file names already exist in the previous release. This is
+              # the common case for the twice-daily runs within the same week.
+              # Confirm the DECOMPRESSED content is truly identical (gzip
+              # embeds a timestamp, so raw *.gz bytes always differ).
+              echo "All files already present by name; verifying content."
+              tmp="$(mktemp -d)"
+              gh release download "$PREV_TAG" --dir "$tmp" --pattern '*.gz' --clobber
+              changed=false
+              for f in "${files[@]}"; do
+                name="$(basename "$f")"
+                new_sha="$(content_sha "$f")"
+                old_sha="$(content_sha "$tmp/$name")"
+                if [ "$new_sha" != "$old_sha" ]; then
+                  echo "  CHANGED:    $name (data differs despite same name)"
+                  changed=true
+                else
+                  echo "  unchanged:  $name"
+                fi
+              done
+              rm -rf "$tmp"
+              if [ "$changed" = "true" ]; then
+                publish=true
+              fi
             fi
           fi
 
