@@ -28,6 +28,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirement.txt
 
+      # The output directory is no longer kept in the repository; create it
+      # on the ephemeral runner so the update script has somewhere to write.
+      - name: Prepare output directory
+        run: mkdir -p "Clinvar_build/${{ matrix.genome }}"
+
       - name: Update Clinvar with GRCh37
         if: matrix.genome == 'hg19'
         run: |
@@ -40,10 +45,8 @@ jobs:
           cd ./update_annovar_db
           python3 ./update_resources.py -d clinvar -w -hp ../Clinvar_build/hg38 -a ../ANNOVAR_script -g GRCh38
 
-      # Only the freshly generated files are kept in the workspace; the
-      # Clinvar_build/hgXX folders themselves stay committed as empty
-      # placeholders (.gitkeep). Generated data is NEVER committed to git;
-      # it is published as release assets only.
+      # Generated data lives only in the ephemeral runner workspace and is
+      # passed to the release job as build artifacts. It is NEVER committed.
       #
       # On runs where ClinVar has no new version, the update script exits
       # early and produces no file, so we must NOT fail the job in that case.
@@ -51,7 +54,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.genome }}
-          # Only grab generated data files, never the .gitkeep placeholder
           path: |
             Clinvar_build/${{ matrix.genome }}/*.gz
             Clinvar_build/${{ matrix.genome }}/*.ver
@@ -67,17 +69,10 @@ jobs:
         with:
           token: ${{ secrets.GH_TOKEN }}
 
-      # Make sure the tracked folders exist as empty placeholders only.
-      # Remove anything the checkout may have left behind (defensive) but
-      # keep the .gitkeep files so the empty folders stay in the repo.
-      - name: Ensure Clinvar_build folders are empty placeholders
+      - name: Prepare output directories
         run: |
           set -e
-          for g in hg19 hg38; do
-            mkdir -p "Clinvar_build/$g"
-            find "Clinvar_build/$g" -maxdepth 1 -type f ! -name '.gitkeep' -delete
-            [ -f "Clinvar_build/$g/.gitkeep" ] || touch "Clinvar_build/$g/.gitkeep"
-          done
+          mkdir -p Clinvar_build/hg19 Clinvar_build/hg38
 
       - name: Download artifacts for GRCh37
         id: dl19
@@ -95,26 +90,110 @@ jobs:
           name: "hg38"
           path: ./Clinvar_build/hg38
 
-      # Verify the downloaded artifacts really are present before releasing.
-      # If ClinVar had no new version this run, no file is produced and we
-      # simply skip the release (the job still succeeds).
-      - name: Collect and verify release assets
-        id: assets
+      # ---------------------------------------------------------------------
+      # Decide whether this run actually produced NEW data.
+      #
+      # ClinVar updates roughly once a week, but this workflow runs twice a
+      # day.  Every run regenerates the database files, so most runs produce
+      # identical *data* to the previous release.  Publishing a release every
+      # time would be pure noise (and waste release storage).
+      #
+      # IMPORTANT: we must compare the DECOMPRESSED content, because gzip
+      # embeds a timestamp in its header, so two runs over identical data
+      # produce byte-different *.gz files.  We therefore compare the SHA-256
+      # of `zcat <file>` for each freshly generated *.gz against the same
+      # file name in the newest existing release.  If all match -> nothing
+      # new -> skip releasing.
+      # ---------------------------------------------------------------------
+      - name: Detect whether new data differs from last release
+        id: diff
         run: |
-          set -e
+          set -euo pipefail
           shopt -s nullglob
+
+          # SHA-256 of decompressed content (data identity, ignoring gzip
+          # timestamp/compression-level differences).
+          content_sha() { gunzip -c "$1" | sha256sum | awk '{print $1}'; }
+
           files=(Clinvar_build/hg19/*.gz Clinvar_build/hg38/*.gz)
           if [ ${#files[@]} -eq 0 ]; then
-            echo "No new database files produced this run; skipping release."
-            echo "have_assets=false" >> "$GITHUB_OUTPUT"
+            echo "No database files produced this run (ClinVar unchanged); skipping release."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "have_assets=true" >> "$GITHUB_OUTPUT"
-          printf 'asset: %s\n' "${files[@]}"
-          ls -la "${files[@]}"
+
+          # Newest existing release that carries .gz assets (top of gh release list).
+          PREV_TAG=""
+          for t in $(gh release list --exclude-drafts --limit 15 --json tagName -q '.[].tagName'); do
+            if gh release view "$t" --json assets -q '.assets[].name' 2>/dev/null | grep -q '\.gz$'; then
+              PREV_TAG="$t"
+              break
+            fi
+          done
+
+          publish=false
+          if [ -z "$PREV_TAG" ]; then
+            echo "No previous release with .gz assets found; this is the first publish."
+            publish=true
+          else
+            echo "Comparing against previous release: $PREV_TAG"
+
+            # Fast path: the generated file name embeds the ClinVar data
+            # release date (from the NCBI FTP listing), not today's date.
+            # A genuinely new ClinVar version therefore yields a file name
+            # that is not among the previous release's assets.  If any new
+            # file name is absent from the previous release, it is new data;
+            # we can decide without downloading the large old assets.
+            prev_names="$(gh release view "$PREV_TAG" --json assets -q '.assets[].name')"
+            new_name=false
+            for f in "${files[@]}"; do
+              name="$(basename "$f")"
+              if ! grep -qxF "$name" <<<"$prev_names"; then
+                echo "  NEW FILE:   $name (not in previous release)"
+                new_name=true
+              fi
+            done
+
+            if [ "$new_name" = "true" ]; then
+              publish=true
+            else
+              # All file names already exist in the previous release. This is
+              # the common case for the twice-daily runs within the same week.
+              # Confirm the DECOMPRESSED content is truly identical (gzip
+              # embeds a timestamp, so raw *.gz bytes always differ).
+              echo "All files already present by name; verifying content."
+              tmp="$(mktemp -d)"
+              gh release download "$PREV_TAG" --dir "$tmp" --pattern '*.gz' --clobber
+              changed=false
+              for f in "${files[@]}"; do
+                name="$(basename "$f")"
+                new_sha="$(content_sha "$f")"
+                old_sha="$(content_sha "$tmp/$name")"
+                if [ "$new_sha" != "$old_sha" ]; then
+                  echo "  CHANGED:    $name (data differs despite same name)"
+                  changed=true
+                else
+                  echo "  unchanged:  $name"
+                fi
+              done
+              rm -rf "$tmp"
+              if [ "$changed" = "true" ]; then
+                publish=true
+              fi
+            fi
+          fi
+
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          if [ "$publish" = "true" ]; then
+            echo "Result: new/changed data detected -> will publish a release."
+          else
+            echo "Result: identical to previous release -> skip release (nothing to publish)."
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
 
       - name: Resolve release tag (unique per run)
-        if: steps.assets.outputs.have_assets == 'true'
+        if: steps.diff.outputs.publish == 'true'
         id: tag
         run: |
           set -e
@@ -131,7 +210,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
 
       - name: Create Github Release with generated database
-        if: steps.assets.outputs.have_assets == 'true'
+        if: steps.diff.outputs.publish == 'true'
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
@@ -142,29 +221,3 @@ jobs:
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-
-      # Re-assert that the repo tree only keeps empty placeholder folders and
-      # commit only if the placeholder state actually needs fixing. No data
-      # file is ever committed: generated *.gz / *.ver are explicitly ignored
-      # by Clinvar_build/.gitignore, so they can never be staged here even
-      # though download-artifact placed them in the working tree.
-      - name: Keep Clinvar_build empty in repository (no data commits)
-        run: |
-          set -e
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          # Create placeholder files if some checkout step removed them.
-          for g in hg19 hg38; do
-            mkdir -p "Clinvar_build/$g"
-            [ -f "Clinvar_build/$g/.gitkeep" ] || touch "Clinvar_build/$g/.gitkeep"
-          done
-          # Stage only the placeholder files and the ignore rule.
-          git add Clinvar_build/.gitignore
-          git add -f Clinvar_build/hg19/.gitkeep Clinvar_build/hg38/.gitkeep
-          if git diff --cached --quiet; then
-            echo "Clinvar_build placeholders already clean; nothing to commit."
-          else
-            echo "Committing placeholder/ignore fix only."
-            git commit -m "chore: keep Clinvar_build as empty placeholders (data published to releases)"
-            git push
-          fi
