@@ -15,14 +15,16 @@
 示例如下：
 
 ```
-# Release
+# 数据库文件只通过 Release 发布（不再提交到仓库）
 # 假设下载链接为
 # https://github.com/ryuzheng/clinvar_db_for_annovar/releases/download/tag-2021-05-21/hg19_clinvar_20210517.txt.gz
-wget https://download.fastgit.org/ryuzheng/clinvar_db_for_annovar/releases/download/tag-2021-05-21/hg19_clinvar_20210517.txt.gz
-
-# 假设文件位置为Clinvar_build/hg38/hg38_clinvar_20210517.txt.gz
-wget https://cdn.jsdelivr.net/gh/ryuzheng/clinvar_db_for_annovar/Clinvar_build/hg38/hg38_clinvar_20210517.txt.gz
+wget https://github.com/ryuzheng/clinvar_db_for_annovar/releases/download/tag-2021-05-21/hg19_clinvar_20210517.txt.gz
 ```
+
+> 注意：为避免仓库体积过大，生成的数据库文件（`*.txt.gz`、`*.txt.idx.gz`）**只发布在 Release**，
+> 仓库中不再保存 `Clinvar_build/` 目录及其数据文件。请始终从上方 Release 页面下载。
+> 只有当 ClinVar 数据真正发生变化时才会创建新的 Release；每日多次运行不会产生重复的 Release。
+
 
 -----
 

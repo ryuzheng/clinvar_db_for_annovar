@@ -1,9 +1,0 @@
-# Generated Clinvar database files are published as GitHub Release assets,
-# never committed to the repository. Only the empty placeholder folders
-# (kept alive by .gitkeep) are tracked here.
-*
-!.gitignore
-!hg19/
-!hg38/
-!hg19/.gitkeep
-!hg38/.gitkeep
