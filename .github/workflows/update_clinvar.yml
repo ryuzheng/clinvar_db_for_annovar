@@ -40,11 +40,22 @@ jobs:
           cd ./update_annovar_db
           python3 ./update_resources.py -d clinvar -w -hp ../Clinvar_build/hg38 -a ../ANNOVAR_script -g GRCh38
 
+      # Only the freshly generated files are kept in the workspace; the
+      # Clinvar_build/hgXX folders themselves stay committed as empty
+      # placeholders (.gitkeep). Generated data is NEVER committed to git;
+      # it is published as release assets only.
+      #
+      # On runs where ClinVar has no new version, the update script exits
+      # early and produces no file, so we must NOT fail the job in that case.
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.genome }}
-          path: ./Clinvar_build/${{ matrix.genome }}
+          # Only grab generated data files, never the .gitkeep placeholder
+          path: |
+            Clinvar_build/${{ matrix.genome }}/*.gz
+            Clinvar_build/${{ matrix.genome }}/*.ver
+          if-no-files-found: warn
           retention-days: 1
 
   release:
@@ -55,44 +66,105 @@ jobs:
       - uses: actions/checkout@v7
         with:
           token: ${{ secrets.GH_TOKEN }}
-      
-      - name: clean previous build
+
+      # Make sure the tracked folders exist as empty placeholders only.
+      # Remove anything the checkout may have left behind (defensive) but
+      # keep the .gitkeep files so the empty folders stay in the repo.
+      - name: Ensure Clinvar_build folders are empty placeholders
         run: |
-          rm -f Clinvar_build/hg19/*
-          rm -f Clinvar_build/hg38/*
+          set -e
+          for g in hg19 hg38; do
+            mkdir -p "Clinvar_build/$g"
+            find "Clinvar_build/$g" -maxdepth 1 -type f ! -name '.gitkeep' -delete
+            [ -f "Clinvar_build/$g/.gitkeep" ] || touch "Clinvar_build/$g/.gitkeep"
+          done
 
       - name: Download artifacts for GRCh37
+        id: dl19
+        continue-on-error: true
         uses: actions/download-artifact@v8
         with:
           name: "hg19"
           path: ./Clinvar_build/hg19
 
       - name: Download artifacts for GRCh38
+        id: dl38
+        continue-on-error: true
         uses: actions/download-artifact@v8
         with:
           name: "hg38"
           path: ./Clinvar_build/hg38
 
-      - name: Commit
-        id: auto-commit-action
-        uses: stefanzweifel/git-auto-commit-action@v7
+      # Verify the downloaded artifacts really are present before releasing.
+      # If ClinVar had no new version this run, no file is produced and we
+      # simply skip the release (the job still succeeds).
+      - name: Collect and verify release assets
+        id: assets
+        run: |
+          set -e
+          shopt -s nullglob
+          files=(Clinvar_build/hg19/*.gz Clinvar_build/hg38/*.gz)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No new database files produced this run; skipping release."
+            echo "have_assets=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "have_assets=true" >> "$GITHUB_OUTPUT"
+          printf 'asset: %s\n' "${files[@]}"
+          ls -la "${files[@]}"
 
-      - name: Push changes
-        uses: ad-m/github-push-action@v1.3.0
-        with:
-          github_token: ${{ secrets.GH_TOKEN }}
-          branch: master
+      - name: Resolve release tag (unique per run)
+        if: steps.assets.outputs.have_assets == 'true'
+        id: tag
+        run: |
+          set -e
+          DATE=$(date -u +'%Y-%m-%d')
+          TAG="tag-${DATE}"
+          # A scheduled run fires twice a day; make the second run of the day
+          # unique instead of failing on an existing tag/release.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            TAG="tag-${DATE}-$(date -u +'%H%M')"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Using release tag: $TAG"
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
 
-      - name: Get current date
-        id: date
-        run: echo "date=$(date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
-
-      - name: Create Github Release
-        if: steps.auto-commit-action.outputs.changes_detected == 'true'
+      - name: Create Github Release with generated database
+        if: steps.assets.outputs.have_assets == 'true'
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: tag-${{ steps.date.outputs.date }}
-          name: release-${{ steps.date.outputs.date }}
-          files: "Clinvar_build/*/*.gz"
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: release-${{ steps.tag.outputs.tag }}
+          files: |
+            Clinvar_build/hg19/*.gz
+            Clinvar_build/hg38/*.gz
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+
+      # Re-assert that the repo tree only keeps empty placeholder folders and
+      # commit only if the placeholder state actually needs fixing. No data
+      # file is ever committed: generated *.gz / *.ver are explicitly ignored
+      # by Clinvar_build/.gitignore, so they can never be staged here even
+      # though download-artifact placed them in the working tree.
+      - name: Keep Clinvar_build empty in repository (no data commits)
+        run: |
+          set -e
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Create placeholder files if some checkout step removed them.
+          for g in hg19 hg38; do
+            mkdir -p "Clinvar_build/$g"
+            [ -f "Clinvar_build/$g/.gitkeep" ] || touch "Clinvar_build/$g/.gitkeep"
+          done
+          # Stage only the placeholder files and the ignore rule.
+          git add Clinvar_build/.gitignore
+          git add -f Clinvar_build/hg19/.gitkeep Clinvar_build/hg38/.gitkeep
+          if git diff --cached --quiet; then
+            echo "Clinvar_build placeholders already clean; nothing to commit."
+          else
+            echo "Committing placeholder/ignore fix only."
+            git commit -m "chore: keep Clinvar_build as empty placeholders (data published to releases)"
+            git push
+          fi
