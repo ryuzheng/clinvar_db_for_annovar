@@ -1,0 +1,170 @@
+name: Test dedup logic (read-only)
+
+# Read-only test for the release dedup logic in update_clinvar.yml.
+# It does NOT create, publish, or delete any release. It fetches the live
+# release list, runs the exact same baseline-selection + content comparison,
+# and prints the decision so the fix can be verified against real data.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-dedup:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+
+      # Simulate the files a real run would produce: the current ClinVar data
+      # version is 20261108 (already published in tag-2026-11-09), so with the
+      # fix this MUST resolve to publish=false (skip). We fetch the real assets
+      # from tag-2026-11-09 so the comparison is against real data.
+      - name: Prepare representative build output (real 20261108 assets)
+        run: |
+          set -euo pipefail
+          mkdir -p Clinvar_build/hg19 Clinvar_build/hg38
+          gh release download tag-2026-11-09 --repo "$GITHUB_REPOSITORY" \
+            --dir /tmp/ref --pattern '*.gz' --clobber
+          cp /tmp/ref/hg19_* Clinvar_build/hg19/
+          cp /tmp/ref/hg38_* Clinvar_build/hg38/
+          ls -R Clinvar_build
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
+      - name: Run detect logic (copied from update_clinvar.yml)
+        id: diff
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          content_sha() { gunzip -c "$1" | sha256sum | awk '{print $1}'; }
+
+          files=(Clinvar_build/hg19/*.gz Clinvar_build/hg38/*.gz)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No database files produced this run (ClinVar unchanged); skipping release."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          releases_json="$(mktemp)"
+          if ! gh api --paginate \
+                 -H "Accept: application/vnd.github+json" \
+                 "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$releases_json"; then
+            echo "::error::Failed to list releases from the GitHub API; aborting to avoid a wrong dedup decision."
+            rm -f "$releases_json"
+            exit 1
+          fi
+
+          release_rows_file="$(mktemp)"
+          if ! python3 - "$releases_json" > "$release_rows_file" <<'PY'
+          import json, sys
+          with open(sys.argv[1], encoding="utf-8") as fh:
+              rels = json.load(fh)
+          rows = []
+          for r in rels:
+              if r.get("draft"):
+                  continue
+              names = [a["name"] for a in r.get("assets", []) if a.get("name", "").endswith(".gz")]
+              if not names:
+                  continue
+              ts = r.get("published_at") or r.get("created_at") or ""
+              rows.append((ts, r.get("tag_name", ""), ",".join(sorted(names))))
+          rows.sort(key=lambda x: x[0], reverse=True)
+          for ts, tag, names in rows:
+              print(f"{ts}\t{tag}\t{names}")
+          PY
+          then
+            echo "::error::Failed to parse release list JSON."
+            rm -f "$releases_json" "$release_rows_file"
+            exit 1
+          fi
+
+          if [ ! -s "$release_rows_file" ]; then
+            echo "No existing release carries .gz assets; this is the first publish."
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            rm -f "$releases_json" "$release_rows_file"
+            exit 0
+          fi
+
+          IFS=$'\t' read -r PREV_TS PREV_TAG _ < "$release_rows_file" || true
+          echo "Newest release with assets (by published_at): $PREV_TAG (published ${PREV_TS})"
+
+          BASELINE_TAG=""
+          while IFS=$'\t' read -r _tag_ts tag names; do
+            [ -n "$tag" ] || continue
+            have_all=true
+            have=()
+            rest="$names,"
+            while [ -n "$rest" ]; do
+              have+=("${rest%%,*}")
+              rest="${rest#*,}"
+            done
+            for f in "${files[@]}"; do
+              name="$(basename "$f")"
+              match=false
+              for h in "${have[@]}"; do
+                if [ "$h" = "$name" ]; then match=true; break; fi
+              done
+              if [ "$match" = "false" ]; then have_all=false; break; fi
+            done
+            if [ "$have_all" = "true" ]; then
+              BASELINE_TAG="$tag"
+              break
+            fi
+          done < "$release_rows_file"
+          rm -f "$release_rows_file"
+
+          publish=false
+          if [ -z "$BASELINE_TAG" ]; then
+            echo "No existing release already contains all generated file names -> new ClinVar version."
+            publish=true
+          else
+            echo "All generated file names already exist in release: $BASELINE_TAG"
+            echo "Verifying decompressed content against $BASELINE_TAG."
+            tmp="$(mktemp -d)"
+            if ! gh release download "$BASELINE_TAG" --repo "$GITHUB_REPOSITORY" \
+                   --dir "$tmp" --pattern '*.gz' --clobber; then
+              echo "::error::Failed to download assets from $BASELINE_TAG for content comparison."
+              rm -rf "$tmp" "$releases_json"
+              exit 1
+            fi
+            changed=false
+            for f in "${files[@]}"; do
+              name="$(basename "$f")"
+              if [ ! -f "$tmp/$name" ]; then
+                echo "  MISSING in baseline: $name -> treating as changed."
+                changed=true
+                continue
+              fi
+              new_sha="$(content_sha "$f")"
+              old_sha="$(content_sha "$tmp/$name")"
+              if [ "$new_sha" != "$old_sha" ]; then
+                echo "  CHANGED:    $name (data differs despite same name)"
+                changed=true
+              else
+                echo "  unchanged:  $name"
+              fi
+            done
+            rm -rf "$tmp"
+            if [ "$changed" = "true" ]; then
+              publish=true
+            fi
+          fi
+
+          rm -f "$releases_json"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          if [ "$publish" = "true" ]; then
+            echo "Result: new/changed data detected -> will publish a release."
+          else
+            echo "Result: identical to the release that already holds this data ($BASELINE_TAG) -> skip release (nothing to publish)."
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Assert expected decision (duplicate data => skip)
+        run: |
+          echo "Decision: publish=${{ steps.diff.outputs.publish }}"
+          if [ "${{ steps.diff.outputs.publish }}" != "false" ]; then
+            echo "::error::Expected publish=false for already-published 20261108 data, got '${{ steps.diff.outputs.publish }}'."
+            exit 1
+          fi
+          echo "PASS: duplicate data correctly detected, release would be skipped."
