@@ -122,72 +122,151 @@ jobs:
             exit 0
           fi
 
-          # Newest existing release that carries .gz assets (top of gh release list).
-          PREV_TAG=""
-          for t in $(gh release list --exclude-drafts --limit 15 --json tagName -q '.[].tagName'); do
-            if gh release view "$t" --json assets -q '.assets[].name' 2>/dev/null | grep -q '\.gz$'; then
-              PREV_TAG="$t"
-              break
-            fi
-          done
+          # -------------------------------------------------------------------
+          # Gather the release history ONCE, failing loudly on any API error.
+          #
+          # The previous implementation iterated `gh release list` and probed
+          # each release with `gh release view ... 2>/dev/null | grep`. That is
+          # why a duplicate release was published on 2026-11-16: a transient
+          # failure on the probe for `tag-2026-11-09` was swallowed by
+          # 2>/dev/null, so the loop silently fell through to the older
+          # `tag-2026-11-02` (which carries the previous ClinVar version), and
+          # the current `20261108` data then looked "new".
+          #
+          # We now fetch every release with its asset names in one paginated
+          # call. Any error aborts the step (no silent fallthrough), and the
+          # baseline is chosen by an explicit published_at sort rather than by
+          # `gh release list`'s implicit (created_at) ordering — which is
+          # fragile for releases whose created_at and published_at differ.
+          # -------------------------------------------------------------------
+          releases_json="$(mktemp)"
+          if ! gh api --paginate \
+                 -H "Accept: application/vnd.github+json" \
+                 "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$releases_json"; then
+            echo "::error::Failed to list releases from the GitHub API; aborting to avoid a wrong dedup decision."
+            rm -f "$releases_json"
+            exit 1
+          fi
 
-          publish=false
-          if [ -z "$PREV_TAG" ]; then
-            echo "No previous release with .gz assets found; this is the first publish."
-            publish=true
-          else
-            echo "Comparing against previous release: $PREV_TAG"
+          # Emit "published_at<TAB>tag<TAB>name1,name2,..." for every NON-draft
+          # release that carries at least one .gz asset, sorted newest first by
+          # published_at (falls back to created_at when published_at is empty,
+          # which happens for drafts/never-published entries we skip anyway).
+          release_rows_file="$(mktemp)"
+          if ! python3 - "$releases_json" > "$release_rows_file" <<'PY'
+          import json, sys
+          with open(sys.argv[1], encoding="utf-8") as fh:
+              rels = json.load(fh)
+          rows = []
+          for r in rels:
+              if r.get("draft"):
+                  continue
+              names = [a["name"] for a in r.get("assets", []) if a.get("name", "").endswith(".gz")]
+              if not names:
+                  continue
+              ts = r.get("published_at") or r.get("created_at") or ""
+              rows.append((ts, r.get("tag_name", ""), ",".join(sorted(names))))
+          rows.sort(key=lambda x: x[0], reverse=True)
+          for ts, tag, names in rows:
+              print(f"{ts}\t{tag}\t{names}")
+          PY
+          then
+            echo "::error::Failed to parse release list JSON."
+            rm -f "$releases_json" "$release_rows_file"
+            exit 1
+          fi
 
-            # Fast path: the generated file name embeds the ClinVar data
-            # release date (from the NCBI FTP listing), not today's date.
-            # A genuinely new ClinVar version therefore yields a file name
-            # that is not among the previous release's assets.  If any new
-            # file name is absent from the previous release, it is new data;
-            # we can decide without downloading the large old assets.
-            prev_names="$(gh release view "$PREV_TAG" --json assets -q '.assets[].name')"
-            new_name=false
+          if [ ! -s "$release_rows_file" ]; then
+            echo "No existing release carries .gz assets; this is the first publish."
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            rm -f "$releases_json" "$release_rows_file"
+            exit 0
+          fi
+
+          # Baseline (for logging / content comparison) = newest release by
+          # published_at that has .gz assets.
+          IFS=$'\t' read -r PREV_TS PREV_TAG _ < "$release_rows_file" || true
+          echo "Newest release with assets (by published_at): $PREV_TAG (published ${PREV_TS})"
+
+          # Robust dedup: this run's data version is identified by the embedded
+          # file name(s) (hg19_/hg38_clinvar_YYYYMMDD...). If ANY non-draft
+          # release already carries ALL of the freshly generated file names,
+          # the same data version has been published before — regardless of
+          # release ordering. Pick the newest such release as the comparison
+          # baseline so the decision never depends on which release happens to
+          # sit at the top of the list.
+          BASELINE_TAG=""
+          while IFS=$'\t' read -r _tag_ts tag names; do
+            [ -n "$tag" ] || continue
+            have_all=true
+            # Split the comma-separated asset names into a bash array
+            # (portable: avoid `read -ra`, which bash 3.2 lacks).
+            have=()
+            rest="$names,"
+            while [ -n "$rest" ]; do
+              have+=("${rest%%,*}")
+              rest="${rest#*,}"
+            done
             for f in "${files[@]}"; do
               name="$(basename "$f")"
-              if ! grep -qxF "$name" <<<"$prev_names"; then
-                echo "  NEW FILE:   $name (not in previous release)"
-                new_name=true
+              match=false
+              for h in "${have[@]}"; do
+                if [ "$h" = "$name" ]; then match=true; break; fi
+              done
+              if [ "$match" = "false" ]; then have_all=false; break; fi
+            done
+            if [ "$have_all" = "true" ]; then
+              BASELINE_TAG="$tag"
+              break   # rows are newest-first, so first match is the newest
+            fi
+          done < "$release_rows_file"
+          rm -f "$release_rows_file"
+
+          publish=false
+          if [ -z "$BASELINE_TAG" ]; then
+            echo "No existing release already contains all generated file names -> new ClinVar version."
+            publish=true
+          else
+            echo "All generated file names already exist in release: $BASELINE_TAG"
+            # Confirm the DECOMPRESSED content is truly identical (gzip embeds
+            # a timestamp, so raw *.gz bytes always differ run to run).
+            echo "Verifying decompressed content against $BASELINE_TAG."
+            tmp="$(mktemp -d)"
+            if ! gh release download "$BASELINE_TAG" --repo "$GITHUB_REPOSITORY" \
+                   --dir "$tmp" --pattern '*.gz' --clobber; then
+              echo "::error::Failed to download assets from $BASELINE_TAG for content comparison."
+              rm -rf "$tmp" "$releases_json"
+              exit 1
+            fi
+            changed=false
+            for f in "${files[@]}"; do
+              name="$(basename "$f")"
+              if [ ! -f "$tmp/$name" ]; then
+                echo "  MISSING in baseline: $name -> treating as changed."
+                changed=true
+                continue
+              fi
+              new_sha="$(content_sha "$f")"
+              old_sha="$(content_sha "$tmp/$name")"
+              if [ "$new_sha" != "$old_sha" ]; then
+                echo "  CHANGED:    $name (data differs despite same name)"
+                changed=true
+              else
+                echo "  unchanged:  $name"
               fi
             done
-
-            if [ "$new_name" = "true" ]; then
+            rm -rf "$tmp"
+            if [ "$changed" = "true" ]; then
               publish=true
-            else
-              # All file names already exist in the previous release. This is
-              # the common case for the twice-daily runs within the same week.
-              # Confirm the DECOMPRESSED content is truly identical (gzip
-              # embeds a timestamp, so raw *.gz bytes always differ).
-              echo "All files already present by name; verifying content."
-              tmp="$(mktemp -d)"
-              gh release download "$PREV_TAG" --dir "$tmp" --pattern '*.gz' --clobber
-              changed=false
-              for f in "${files[@]}"; do
-                name="$(basename "$f")"
-                new_sha="$(content_sha "$f")"
-                old_sha="$(content_sha "$tmp/$name")"
-                if [ "$new_sha" != "$old_sha" ]; then
-                  echo "  CHANGED:    $name (data differs despite same name)"
-                  changed=true
-                else
-                  echo "  unchanged:  $name"
-                fi
-              done
-              rm -rf "$tmp"
-              if [ "$changed" = "true" ]; then
-                publish=true
-              fi
             fi
           fi
 
+          rm -f "$releases_json"
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           if [ "$publish" = "true" ]; then
             echo "Result: new/changed data detected -> will publish a release."
           else
-            echo "Result: identical to previous release -> skip release (nothing to publish)."
+            echo "Result: identical to the release that already holds this data ($BASELINE_TAG) -> skip release (nothing to publish)."
           fi
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
@@ -200,12 +279,20 @@ jobs:
           DATE=$(date -u +'%Y-%m-%d')
           TAG="tag-${DATE}"
           # A scheduled run fires twice a day; make the second run of the day
-          # unique instead of failing on an existing tag/release.
-          if gh release view "$TAG" >/dev/null 2>&1; then
+          # unique instead of failing on an existing tag/release. The suffix
+          # only affects the tag (and therefore the release name), keeping the
+          # historical `tag-YYYY-MM-DD` / `release-YYYY-MM-DD` shape for the
+          # first run of each day, exactly like tag-2026-11-09 / release-2026-11-09.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             TAG="tag-${DATE}-$(date -u +'%H%M')"
           fi
+          # Release name mirrors the historical format: `release-<tag without the
+          # leading 'tag-'>` => release-2026-11-09 (not release-tag-2026-11-09).
+          NAME="release-${TAG#tag-}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Using release tag: $TAG"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "date=$DATE" >> "$GITHUB_OUTPUT"
+          echo "Using release tag: $TAG (name: $NAME)"
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
 
@@ -214,7 +301,13 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
-          name: release-${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.name }}
+          # Description matches the historical releases: the release/tag date
+          # line, followed by the standard "Apply automatic changes" note.
+          body: |
+            ${{ steps.tag.outputs.tag }}
+
+            Apply automatic changes
           files: |
             Clinvar_build/hg19/*.gz
             Clinvar_build/hg38/*.gz
